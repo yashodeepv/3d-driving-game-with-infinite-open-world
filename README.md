@@ -1,5 +1,7 @@
 # NEON HORIZON — INFINITE DRIFT 🏎
 
+CLAUDE FABLE 5 test
+
 A 3D open-world driving game in **a single HTML file**. The world is procedurally
 generated and truly infinite — pick a direction and drive forever.
 
