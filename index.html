@@ -2,15 +2,18 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <title>NEON HORIZON — INFINITE DRIFT</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🏎</text></svg>">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@500;800&family=Rajdhani:wght@500;600&display=swap" rel="stylesheet">
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
-  html, body { width: 100%; height: 100%; overflow: hidden; background: #06081c; }
-  body { font-family: 'Rajdhani', 'Avenir Next', sans-serif; color: #cfefff; user-select: none; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: #06081c; touch-action: none; overscroll-behavior: none; }
+  body { font-family: 'Rajdhani', 'Avenir Next', sans-serif; color: #cfefff; user-select: none; -webkit-user-select: none; -webkit-tap-highlight-color: transparent; }
   canvas { display: block; }
 
   #loading {
@@ -107,6 +110,60 @@
     background: rgba(4,5,20,0.6); font-family: 'Orbitron', monospace; font-size: 42px;
     letter-spacing: 0.5em; color: #00f0ff; text-shadow: 0 0 25px rgba(0,240,255,0.8);
   }
+
+  /* -------- touch controls (shown only on coarse-pointer devices) -------- */
+  #touchui { display: none; }
+  body.touch #touchui { display: block; }
+  body.touch #help { display: none; }
+  body.touch #controls { display: none; }
+  body.touch #nitrobox { left: 50%; transform: translateX(-50%); bottom: 88px; width: 140px; }
+  body.touch #nitrolabel { text-align: center; }
+  .tbtn {
+    pointer-events: auto; user-select: none; -webkit-user-select: none;
+    width: 72px; height: 72px; border-radius: 50%;
+    border: 1.5px solid rgba(0,240,255,0.5); background: rgba(10,20,40,0.35);
+    color: #9fe8f5; display: flex; align-items: center; justify-content: center;
+    font-family: 'Orbitron', monospace; font-size: 24px;
+    touch-action: none; -webkit-tap-highlight-color: transparent;
+  }
+  .tbtn.on {
+    background: rgba(0,240,255,0.28); border-color: #00f0ff; color: #fff;
+    box-shadow: 0 0 18px rgba(0,240,255,0.55);
+  }
+  .tbtn.small { width: 58px; height: 58px; font-size: 10px; letter-spacing: 0.1em;
+    border-color: rgba(255,45,120,0.55); color: #ffb7d9; }
+  .tbtn.small.on { background: rgba(255,45,120,0.3); border-color: #ff2d78; box-shadow: 0 0 18px rgba(255,45,120,0.55); }
+  .tbtn.big { width: 88px; height: 88px; }
+  .tbtn.tiny { width: 42px; height: 42px; font-size: 18px; border-radius: 12px; border-color: rgba(160,200,220,0.4); }
+  #tleft {
+    position: fixed; z-index: 12; display: flex; gap: 14px; align-items: flex-end;
+    left: calc(16px + env(safe-area-inset-left)); bottom: calc(18px + env(safe-area-inset-bottom));
+  }
+  #tright {
+    position: fixed; z-index: 12; display: flex; flex-direction: column; gap: 12px; align-items: flex-end;
+    right: calc(16px + env(safe-area-inset-right)); bottom: calc(18px + env(safe-area-inset-bottom));
+  }
+  .trow { display: flex; gap: 12px; align-items: flex-end; }
+  #ttop {
+    position: fixed; z-index: 12; display: flex; flex-direction: row; gap: 12px;
+    left: 50%; transform: translateX(-50%); top: calc(10px + env(safe-area-inset-top));
+  }
+
+  /* -------- small screens -------- */
+  @media (max-width: 900px) {
+    #speed { font-size: 42px; }
+    #speedunit { font-size: 11px; letter-spacing: 0.35em; }
+    #speedbox { bottom: 20px; }
+    #score { font-size: 24px; }
+    #scorelabel, #best { font-size: 11px; }
+    #topleft { font-size: 12px; top: 12px; left: 14px; }
+    #gametitle { font-size: 12px; }
+    #scorebox { top: 12px; right: 16px; }
+    #popup { font-size: 24px; }
+    #bigtitle { letter-spacing: 0.08em; }
+    #controls { font-size: 14px; gap: 5px 16px; }
+    #pauseoverlay { font-size: 26px; }
+  }
 </style>
 </head>
 <body>
@@ -144,6 +201,29 @@
 <div class="hud" id="popup"></div>
 
 <div id="pauseoverlay">PAUSED</div>
+
+<div id="touchui">
+  <div id="tleft">
+    <div class="tbtn" id="btnL">◀</div>
+    <div class="tbtn" id="btnR">▶</div>
+  </div>
+  <div id="tright">
+    <div class="trow">
+      <div class="tbtn small" id="btnDrift">DRIFT</div>
+      <div class="tbtn small" id="btnNitro">NITRO</div>
+    </div>
+    <div class="trow">
+      <div class="tbtn" id="btnBrake">▼</div>
+      <div class="tbtn big" id="btnGas">▲</div>
+    </div>
+  </div>
+  <div id="ttop">
+    <div class="tbtn tiny" id="btnCam">📷</div>
+    <div class="tbtn tiny" id="btnRescue">🛟</div>
+    <div class="tbtn tiny" id="btnMute">🔊</div>
+    <div class="tbtn tiny" id="btnPause">⏸</div>
+  </div>
+</div>
 
 <div id="overlay">
   <div id="bigtitle">NEON <span class="pink">HORIZON</span></div>
@@ -197,6 +277,16 @@ const urlParams = new URLSearchParams(location.search);
 const SEED = urlParams.get('seed') ? (parseInt(urlParams.get('seed'), 10) >>> 0) % 1000000 : Math.floor(Math.random() * 1000000);
 document.getElementById('seedval').textContent = '#' + SEED;
 
+/* ---------------- device profile ---------------- */
+const IS_TOUCH = matchMedia('(pointer: coarse)').matches || 'ontouchstart' in window || urlParams.has('touch');
+if (IS_TOUCH) {
+  document.body.classList.add('touch');
+  document.getElementById('pressany').textContent = 'TAP TO IGNITE';
+  document.getElementById('nitrolabel').textContent = 'NITRO';
+  document.getElementById('seedline').insertAdjacentHTML('afterend',
+    '<div style="margin-top:8px;font-size:14px;letter-spacing:0.25em;color:#6fa8b8">🔄 LANDSCAPE RECOMMENDED</div>');
+}
+
 function ihash(ix, iz, s) {
   let h = Math.imul(ix, 374761393) ^ Math.imul(iz, 668265263) ^ Math.imul(s + SEED, 2246822519);
   h = Math.imul(h ^ (h >>> 13), 1274126177);
@@ -230,7 +320,7 @@ function mulberry32(a) {
 
 /* ---------------- world layout ---------------- */
 const CH = 100;          // chunk size (m)
-const VIEW = 6;          // chunk view radius
+const VIEW = IS_TOUCH ? 5 : 6;   // chunk view radius (smaller on mobile GPUs)
 const RS = 400;          // road grid spacing
 const RW = 13;           // road width
 const RH = RW / 2;
@@ -330,7 +420,7 @@ function biomeAt(wx, wz) {
 
 /* ---------------- renderer & scene ---------------- */
 const renderer = new THREE.WebGLRenderer({ antialias: true });
-renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setPixelRatio(Math.min(devicePixelRatio, IS_TOUCH ? 1.5 : 2));
 renderer.setSize(innerWidth, innerHeight);
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
@@ -341,7 +431,7 @@ document.getElementById('loading').style.display = 'none';
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x79c6f0);
-scene.fog = new THREE.Fog(0x79c6f0, 140, 600);
+scene.fog = new THREE.Fog(0x79c6f0, IS_TOUCH ? 110 : 140, IS_TOUCH ? 470 : 600);
 
 const camera = new THREE.PerspectiveCamera(62, innerWidth / innerHeight, 0.4, 5000);
 camera.position.set(0, 6, -12);
@@ -351,7 +441,7 @@ scene.add(hemi);
 
 const sun = new THREE.DirectionalLight(0xfff2d0, 2.2);
 sun.castShadow = true;
-sun.shadow.mapSize.set(2048, 2048);
+sun.shadow.mapSize.set(IS_TOUCH ? 1024 : 2048, IS_TOUCH ? 1024 : 2048);
 sun.shadow.camera.left = -95; sun.shadow.camera.right = 95;
 sun.shadow.camera.top = 95; sun.shadow.camera.bottom = -95;
 sun.shadow.camera.near = 10; sun.shadow.camera.far = 520;
@@ -435,7 +525,7 @@ function addPart(list, geo, r, g, b, px, py, pz, ry, sx, sy, sz) {
 }
 
 /* ---------------- terrain chunk geometry ---------------- */
-const GRID = 32;
+const GRID = IS_TOUCH ? 24 : 32;
 function buildTerrainGeo(ci, cj) {
   const wx0 = ci * CH, wz0 = cj * CH;
   const step = CH / GRID;
@@ -1571,6 +1661,56 @@ addEventListener('resize', () => {
   camera.updateProjectionMatrix();
   renderer.setSize(innerWidth, innerHeight);
 });
+
+/* ---------------- touch controls ---------------- */
+// held buttons write into the same `keys` map the keyboard uses
+function bindHold(id, code) {
+  const el = document.getElementById(id);
+  const press = (e) => {
+    e.preventDefault();
+    if (el.setPointerCapture) el.setPointerCapture(e.pointerId);
+    if (!started) startGame();
+    keys[code] = true;
+    el.classList.add('on');
+  };
+  const release = () => { keys[code] = false; el.classList.remove('on'); };
+  el.addEventListener('pointerdown', press);
+  el.addEventListener('pointerup', release);
+  el.addEventListener('pointercancel', release);
+  el.addEventListener('lostpointercapture', release);
+  el.addEventListener('contextmenu', (e) => e.preventDefault());
+}
+function bindTap(id, fn) {
+  const el = document.getElementById(id);
+  el.addEventListener('pointerdown', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (!started) { startGame(); return; }
+    fn();
+    el.classList.add('on');
+    setTimeout(() => el.classList.remove('on'), 150);
+  });
+}
+if (IS_TOUCH) {
+  bindHold('btnL', 'KeyA');
+  bindHold('btnR', 'KeyD');
+  bindHold('btnGas', 'KeyW');
+  bindHold('btnBrake', 'KeyS');
+  bindHold('btnDrift', 'Space');
+  bindHold('btnNitro', 'ShiftLeft');
+  bindTap('btnCam', () => { camMode = (camMode + 1) % 3; });
+  bindTap('btnRescue', rescue);
+  bindTap('btnMute', () => {
+    audio.toggleMute();
+    document.getElementById('btnMute').textContent = audio.muted ? '🔇' : '🔊';
+  });
+  bindTap('btnPause', togglePause);
+  document.getElementById('pauseoverlay').addEventListener('pointerdown', () => { if (paused) togglePause(); });
+  // block pinch-zoom / scroll / rubber-banding
+  document.addEventListener('touchmove', (e) => e.preventDefault(), { passive: false });
+}
+// if the tab loses focus, release everything so no input sticks
+addEventListener('blur', () => { for (const k in keys) keys[k] = false; });
 </script>
 </body>
 </html>

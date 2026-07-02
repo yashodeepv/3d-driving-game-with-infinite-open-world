@@ -51,6 +51,22 @@ Press any key to start.
 | R | rescue — teleport to the nearest road |
 | M / P / H | mute · pause · hide HUD hints |
 
+## Mobile
+
+Works on phones and tablets: touch devices get on-screen controls automatically
+(steer arrows bottom-left; gas/brake/drift/nitro bottom-right; camera, rescue,
+sound, and pause along the top) plus a lighter rendering preset. Landscape is
+recommended, and "Add to Home Screen" gives you fullscreen.
+
+To reach it from a phone, serve the folder on your network:
+
+```sh
+python3 -m http.server 8000
+# then open http://<your-mac-ip>:8000 on the phone
+```
+
+Append `?touch=1` to any URL to force the touch UI on desktop for testing.
+
 ## Seeds
 
 Every load generates a fresh world. The seed is shown on the title screen —
