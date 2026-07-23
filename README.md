@@ -30,15 +30,30 @@ Press any key to start.
   enough and you'll catch air.
 - **A full day/night cycle**: synthwave sunsets, stars and moonlight, automatic
   headlights, and neon underglow after dark.
+- **Real glow**: HDR bloom post-processing makes the neon, headlights, nitro
+  flames, beacons, and sun genuinely radiate — strongest after dark.
+- **A shader sky dome** with gradient sky, sun halo, and moon glow, plus
+  drifting clouds that blush pink at sunset.
+- **Animated water** with rolling waves and sun glitter on the lakes.
 
 ## The driving
 
 - Arcade physics with proper drifting — hold **SPACE** while turning to slide,
   leaving skid marks and tire smoke. Long drifts bank score.
 - **Nitro orbs** float along the roads; collect them and hit **SHIFT** for
-  flame-spitting boost.
+  flame-spitting boost with a cyan exhaust trail.
+- **Neon jump ramps** appear along the highways — hit them at speed to launch
+  into big air.
+- **Checkpoint beacons**: a pillar of light marks a target down the road
+  network, with a HUD arrow and countdown. Reach it in time for bonus points
+  and a nitro refill.
+- **Combo multiplier**: drifts, air, orbs, near misses, and checkpoints chain
+  into up to a ×8 score multiplier — crash hard or miss a checkpoint and it
+  resets.
 - Air time, drift chains, and orbs all feed your score (best is saved locally).
 - Procedural engine, wind, and skid audio synthesized live with WebAudio.
+- **Gamepad support**: left stick steers, RT/LT gas & brake, A drift, X/RB
+  nitro, Y camera, B rescue, Start pause.
 
 ## Controls
 
