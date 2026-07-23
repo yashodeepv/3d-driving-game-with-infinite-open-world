@@ -30,6 +30,11 @@ Press any key to start.
   enough and you'll catch air.
 - **A full day/night cycle**: synthwave sunsets, stars and moonlight, automatic
   headlights, and neon underglow after dark.
+- **Real glow**: HDR bloom post-processing makes the neon, headlights, nitro
+  flames, beacons, and sun genuinely radiate — strongest after dark.
+- **A shader sky dome** with gradient sky, sun halo, and moon glow, plus
+  drifting clouds that blush pink at sunset.
+- **Animated water** with rolling waves and sun glitter on the lakes.
 
 ## The driving
 

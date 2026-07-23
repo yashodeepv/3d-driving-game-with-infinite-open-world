@@ -285,6 +285,10 @@
 <script type="module">
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 window.__gameLoaded = true;
 
 /* ============================================================
@@ -438,7 +442,9 @@ function surfaceHeight(wx, wz) {
    Deterministically hashed onto the road network: each 230 m bucket of each
    road has a chance of holding one neon ramp. Physics reads them through
    groundHeight(); meshes are built by the chunk containing the ramp center. */
-const RAMP_SP = 230, RAMP_L = 14, RAMP_W = RW - 3, RAMP_H = 2.6, RAMP_P = 0.3;
+const RAMP_SP = 230, RAMP_L = 18, RAMP_W = RW - 3, RAMP_H = 2.6, RAMP_P = 0.3;
+/* symmetric tent profile: 0 at both ends, RAMP_H at the crest — jumpable from either direction */
+const rampProfile = (u) => RAMP_H * (1 - Math.abs(2 * u / RAMP_L - 1));
 function forEachRampNear(wx, wz, cb) {
   const kx = Math.round(wx / RS), ziz = Math.floor(wz / RAMP_SP);
   for (let k = kx - 1; k <= kx + 1; k++) {
@@ -473,7 +479,7 @@ function rampAdd(wx, wz) {
     const u = (wx - sx) * dx + (wz - sz) * dz;
     const v = (wx - sx) * dz - (wz - sz) * dx;
     if (u >= 0 && u <= RAMP_L && Math.abs(v) <= RAMP_W / 2) {
-      const a = (u / RAMP_L) * RAMP_H;
+      const a = rampProfile(u);
       if (a > add) add = a;
     }
   });
@@ -508,6 +514,54 @@ scene.fog = new THREE.Fog(0x79c6f0, IS_TOUCH ? 110 : 140, IS_TOUCH ? 470 : 600);
 const camera = new THREE.PerspectiveCamera(62, innerWidth / innerHeight, 0.4, 5000);
 camera.position.set(0, 6, -12);
 
+/* ---------------- post-processing (bloom) ----------------
+   Materials whose colors exceed 1.0 are the only things that bloom
+   (threshold 0.9), so glow stays on neon/lights instead of the whole frame. */
+const _rtSize = renderer.getDrawingBufferSize(new THREE.Vector2());
+const composer = new EffectComposer(renderer, new THREE.WebGLRenderTarget(_rtSize.x, _rtSize.y, {
+  type: THREE.HalfFloatType,
+  samples: IS_TOUCH ? 0 : 4,
+}));
+composer.addPass(new RenderPass(scene, camera));
+const bloomPass = new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), 0.3, 0.4, 0.95);
+composer.addPass(bloomPass);
+composer.addPass(new OutputPass());
+composer.setPixelRatio(renderer.getPixelRatio());
+composer.setSize(innerWidth, innerHeight);
+
+/* ---------------- gradient sky dome ---------------- */
+const skyU = {
+  uTop: { value: new THREE.Color(0x2f74cf) },
+  uHorizon: { value: new THREE.Color(0x79c6f0) },
+  uGlowDir: { value: new THREE.Vector3(0, 1, 0) },
+  uGlowCol: { value: new THREE.Color(0xfff2d0) },
+  uGlow: { value: 1 },
+};
+const sky = new THREE.Mesh(
+  new THREE.SphereGeometry(3600, 32, 15),
+  new THREE.ShaderMaterial({
+    uniforms: skyU,
+    side: THREE.BackSide,
+    depthWrite: false,
+    vertexShader: 'varying vec3 vDir; void main(){ vDir = position; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
+    fragmentShader: `
+      uniform vec3 uTop, uHorizon, uGlowCol, uGlowDir;
+      uniform float uGlow;
+      varying vec3 vDir;
+      void main(){
+        vec3 d = normalize(vDir);
+        vec3 col = mix(uHorizon, uTop, pow(clamp(d.y, 0.0, 1.0), 0.58));
+        col = mix(col, uHorizon * 0.55, clamp(-d.y * 5.0, 0.0, 1.0));
+        float s = max(dot(d, uGlowDir), 0.0);
+        col += uGlowCol * uGlow * (pow(s, 600.0) * 1.4 + pow(s, 26.0) * 0.3 + pow(s, 5.0) * 0.10);
+        gl_FragColor = vec4(col, 1.0);
+      }`,
+  })
+);
+sky.renderOrder = -1;
+sky.frustumCulled = false;
+scene.add(sky);
+
 const hemi = new THREE.HemisphereLight(0xbfe6ff, 0x3d4a35, 0.9);
 scene.add(hemi);
 
@@ -531,6 +585,7 @@ const moonDisc = new THREE.Mesh(
   new THREE.SphereGeometry(28, 16, 16),
   new THREE.MeshBasicMaterial({ color: 0xdfe8ff, fog: false })
 );
+moonDisc.material.color.multiplyScalar(1.3);
 scene.add(moonDisc);
 
 // stars
@@ -548,17 +603,69 @@ const starGeo = new THREE.BufferGeometry();
   starGeo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
 }
 const starMat = new THREE.PointsMaterial({ color: 0xcfe4ff, size: 2.2, sizeAttenuation: false, transparent: true, opacity: 0, fog: false });
+starMat.color.multiplyScalar(1.5);
 const stars = new THREE.Points(starGeo, starMat);
 scene.add(stars);
 
-// water
+// water — vertex-shader waves in world space so ripples stay put as the mesh follows the car
+const waterU = { uTime: { value: 0 } };
+const waterMat = new THREE.MeshPhongMaterial({ color: 0x14506e, transparent: true, opacity: 0.8, shininess: 170, specular: 0x9fd0ff });
+waterMat.onBeforeCompile = (sh) => {
+  sh.uniforms.uTime = waterU.uTime;
+  sh.vertexShader = ('uniform float uTime;\n' + sh.vertexShader)
+    .replace('#include <beginnormal_vertex>', `#include <beginnormal_vertex>
+      vec4 wpW = modelMatrix * vec4(position, 1.0);
+      float wvA = sin(wpW.x * 0.10 + uTime * 1.2) + 0.7 * sin(wpW.z * 0.13 + uTime * 0.85) + 0.5 * sin((wpW.x + wpW.z) * 0.05 + uTime * 0.6);
+      float wdx = 0.10 * cos(wpW.x * 0.10 + uTime * 1.2) + 0.025 * cos((wpW.x + wpW.z) * 0.05 + uTime * 0.6);
+      float wdz = 0.091 * cos(wpW.z * 0.13 + uTime * 0.85) + 0.025 * cos((wpW.x + wpW.z) * 0.05 + uTime * 0.6);
+      objectNormal = normalize(vec3(-wdx * 2.4, wdz * 2.4, 1.0));`)
+    .replace('#include <begin_vertex>', `#include <begin_vertex>
+      transformed.z += wvA * 0.28;`);
+};
 const water = new THREE.Mesh(
-  new THREE.PlaneGeometry(4200, 4200),
-  new THREE.MeshPhongMaterial({ color: 0x14506e, transparent: true, opacity: 0.78, shininess: 140, specular: 0x88bbff })
+  new THREE.PlaneGeometry(4200, 4200, IS_TOUCH ? 64 : 110, IS_TOUCH ? 64 : 110),
+  waterMat
 );
 water.rotation.x = -Math.PI / 2;
 water.position.y = WATER;
 scene.add(water);
+
+/* ---------------- drifting clouds ---------------- */
+const puffTex = (() => {
+  const cv = document.createElement('canvas');
+  cv.width = cv.height = 128;
+  const c = cv.getContext('2d');
+  for (const [x, y, r] of [[64, 72, 52], [38, 78, 30], [92, 76, 30], [52, 60, 26], [80, 60, 24]]) {
+    const g = c.createRadialGradient(x, y, 1, x, y, r);
+    g.addColorStop(0, 'rgba(255,255,255,0.5)');
+    g.addColorStop(1, 'rgba(255,255,255,0)');
+    c.fillStyle = g;
+    c.fillRect(0, 0, 128, 128);
+  }
+  return new THREE.CanvasTexture(cv);
+})();
+const cloudMat = new THREE.SpriteMaterial({ map: puffTex, transparent: true, depthWrite: false, fog: false, opacity: 0.8 });
+const clouds = [];
+{
+  const rng = mulberry32(SEED + 77);
+  const n = IS_TOUCH ? 12 : 20;
+  for (let i = 0; i < n; i++) {
+    const sp = new THREE.Sprite(cloudMat);
+    const s = 220 + rng() * 320;
+    sp.scale.set(s, s * 0.4, 1);
+    clouds.push({ sp, x: (rng() - 0.5) * 3200, y: 150 + rng() * 110, z: (rng() - 0.5) * 3200, v: 2 + rng() * 3 });
+    scene.add(sp);
+  }
+}
+function updateClouds(dt) {
+  for (const c of clouds) {
+    c.x += c.v * dt;
+    const dx = c.x - camera.position.x, dz = c.z - camera.position.z;
+    if (dx > 1700) c.x -= 3400; else if (dx < -1700) c.x += 3400;
+    if (dz > 1700) c.z -= 3400; else if (dz < -1700) c.z += 3400;
+    c.sp.position.set(c.x, c.y, c.z);
+  }
+}
 
 /* ---------------- materials & scenery prototypes ---------------- */
 const terrainMat = new THREE.MeshLambertMaterial({ vertexColors: true });
@@ -686,7 +793,7 @@ function buildRoadGeo(ci, cj) {
     idx.push(base, base + 2, base + 1, base + 1, base + 2, base + 3);
   }
   const STEP = 5, ROWS = CH / STEP;
-  const ASPH = [0.15, 0.15, 0.18], EDGE = [0.75, 0.78, 0.85], DASH = [1.0, 0.72, 0.12];
+  const ASPH = [0.15, 0.15, 0.18], EDGE = [0.75, 0.78, 0.85], DASH = [1.35, 0.98, 0.16];
 
   // Z-roads (run along z)
   for (let k = Math.floor((wx0 - 170) / RS); k <= Math.ceil((wx0 + CH + 170) / RS); k++) {
@@ -755,37 +862,35 @@ function buildRampGeo(ci, cj) {
     const px = dz, pz = -dx; // lateral
     const hw = RAMP_W / 2;
     const sx = cx - dx * RAMP_L / 2, sz = cz - dz * RAMP_L / 2;
-    // deck corner heights (start flat on the road, end raised by RAMP_H)
+    const ex = sx + dx * RAMP_L, ez = sz + dz * RAMP_L;
     const hSL = surfaceHeight(sx - px * hw, sz - pz * hw) + 0.05;
     const hSR = surfaceHeight(sx + px * hw, sz + pz * hw) + 0.05;
-    const ex = sx + dx * RAMP_L, ez = sz + dz * RAMP_L;
-    const hEL = surfaceHeight(ex - px * hw, ez - pz * hw) + 0.05 + RAMP_H;
-    const hER = surfaceHeight(ex + px * hw, ez + pz * hw) + 0.05 + RAMP_H;
+    const hEL = surfaceHeight(ex - px * hw, ez - pz * hw) + 0.05;
+    const hER = surfaceHeight(ex + px * hw, ez + pz * hw) + 0.05;
     const P = (u, v) => [sx + dx * u + px * v - wx0, sz + dz * u + pz * v - wz0];
     const Y = (u, v) => {
       const t = u / RAMP_L, s = (v + hw) / (2 * hw);
-      return lerp(lerp(hSL, hSR, s), lerp(hEL, hER, s), t);
+      return lerp(lerp(hSL, hSR, s), lerp(hEL, hER, s), t) + rampProfile(u);
     };
-    const [aX, aZ] = P(0, -hw), [bX, bZ] = P(0, hw), [cX, cZ] = P(RAMP_L, -hw), [dX, dZ] = P(RAMP_L, hw);
-    // deck
-    quad(aX, Y(0, -hw), aZ, bX, Y(0, hw), bZ, cX, Y(RAMP_L, -hw), cZ, dX, Y(RAMP_L, hw), dZ, 0.10, 0.10, 0.15);
-    // neon edge rails
-    for (const sgn of [-1, 1]) {
-      const vi = sgn * hw, vo = sgn * (hw - 0.45);
-      const [iX, iZ] = P(0, vi), [oX, oZ] = P(0, vo), [i2X, i2Z] = P(RAMP_L, vi), [o2X, o2Z] = P(RAMP_L, vo);
-      quad(iX, Y(0, vi) + 0.06, iZ, oX, Y(0, vo) + 0.06, oZ, i2X, Y(RAMP_L, vi) + 0.06, i2Z, o2X, Y(RAMP_L, vo) + 0.06, o2Z, 0.1, 0.9, 1.0);
+    const strip = (u1, u2, v1, v2, dy, r, g, b) => {
+      const [aX, aZ] = P(u1, v1), [bX, bZ] = P(u1, v2), [cX, cZ] = P(u2, v1), [dX, dZ] = P(u2, v2);
+      quad(aX, Y(u1, v1) + dy, aZ, bX, Y(u1, v2) + dy, bZ, cX, Y(u2, v1) + dy, cZ, dX, Y(u2, v2) + dy, dZ, r, g, b);
+    };
+    // both slopes of the tent: deck, neon rails, side skirts
+    const M = RAMP_L / 2;
+    for (const [u1, u2] of [[0, M], [M, RAMP_L]]) {
+      strip(u1, u2, -hw, hw, 0, 0.10, 0.10, 0.15);
+      for (const sgn of [-1, 1]) {
+        strip(u1, u2, sgn * hw, sgn * (hw - 0.45), 0.06, 0.25, 2.0, 2.3);
+        const [i1X, i1Z] = P(u1, sgn * hw), [i2X, i2Z] = P(u2, sgn * hw);
+        quad(i1X, Y(u1, sgn * hw), i1Z, i2X, Y(u2, sgn * hw), i2Z,
+             i1X, Y(u1, sgn * hw) - 3, i1Z, i2X, Y(u2, sgn * hw) - 3, i2Z, 0.05, 0.05, 0.09);
+      }
     }
-    // orange chevron stripes across the deck
-    for (const u of [4.5, 8, 11.5]) {
-      const [s1X, s1Z] = P(u - 0.45, -hw * 0.7), [s2X, s2Z] = P(u - 0.45, hw * 0.7);
-      const [e1X, e1Z] = P(u + 0.45, -hw * 0.7), [e2X, e2Z] = P(u + 0.45, hw * 0.7);
-      quad(s1X, Y(u - 0.45, -hw * 0.7) + 0.07, s1Z, s2X, Y(u - 0.45, hw * 0.7) + 0.07, s2Z,
-           e1X, Y(u + 0.45, -hw * 0.7) + 0.07, e1Z, e2X, Y(u + 0.45, hw * 0.7) + 0.07, e2Z, 1.0, 0.6, 0.08);
+    // orange chevrons on both approach faces
+    for (const u of [3.5, 6.5, RAMP_L - 6.5, RAMP_L - 3.5]) {
+      strip(u - 0.45, u + 0.45, -hw * 0.7, hw * 0.7, 0.07, 1.8, 1.05, 0.12);
     }
-    // side skirts & back wall so the wedge reads as solid
-    quad(aX, Y(0, -hw), aZ, cX, Y(RAMP_L, -hw), cZ, aX, Y(0, -hw) - 3, aZ, cX, Y(RAMP_L, -hw) - 3, cZ, 0.05, 0.05, 0.09);
-    quad(bX, Y(0, hw), bZ, dX, Y(RAMP_L, hw), dZ, bX, Y(0, hw) - 3, bZ, dX, Y(RAMP_L, hw) - 3, dZ, 0.05, 0.05, 0.09);
-    quad(cX, Y(RAMP_L, -hw), cZ, dX, Y(RAMP_L, hw), dZ, cX, Y(RAMP_L, -hw) - 3, cZ, dX, Y(RAMP_L, hw) - 3, dZ, 0.07, 0.07, 0.12);
   });
   if (pos.length === 0) return null;
   const geo = new THREE.BufferGeometry();
@@ -822,7 +927,7 @@ function buildScenery(ci, cj, obstacles) {
         obstacles.push({ x: wx, z: wz, r: 1.2 * sc });
       } else { // glowing ice crystal
         const pink = rng() < 0.4;
-        addPart(glowParts, GEO.crystal, pink ? 1.0 : 0.1, pink ? 0.25 : 0.9, pink ? 0.55 : 1.0, lx, h + 1.2 * sc, lz, rot, sc, sc, sc);
+        addPart(glowParts, GEO.crystal, pink ? 1.9 : 0.2, pink ? 0.5 : 1.7, pink ? 1.05 : 1.9, lx, h + 1.2 * sc, lz, rot, sc, sc, sc);
         obstacles.push({ x: wx, z: wz, r: 0.5 * sc });
       }
     } else if (bio.desert > 0.55) {
@@ -923,13 +1028,26 @@ function updateChunks(carWX, carWZ, budgetMs) {
 }
 
 /* ---------------- the car ---------------- */
+const softGlowTex = (() => {
+  const cv = document.createElement('canvas');
+  cv.width = cv.height = 64;
+  const c = cv.getContext('2d');
+  const g = c.createRadialGradient(32, 32, 2, 32, 32, 32);
+  g.addColorStop(0, 'rgba(255,255,255,0.9)');
+  g.addColorStop(0.35, 'rgba(255,255,255,0.32)');
+  g.addColorStop(1, 'rgba(255,255,255,0)');
+  c.fillStyle = g;
+  c.fillRect(0, 0, 64, 64);
+  return new THREE.CanvasTexture(cv);
+})();
 function buildCar() {
   const group = new THREE.Group();
   group.rotation.order = 'YXZ';
-  const bodyMat = new THREE.MeshStandardMaterial({ color: 0xff2d78, roughness: 0.35, metalness: 0.45 });
+  const bodyMat = new THREE.MeshPhysicalMaterial({ color: 0xff2d78, roughness: 0.32, metalness: 0.55, clearcoat: 1, clearcoatRoughness: 0.18 });
   const darkMat = new THREE.MeshStandardMaterial({ color: 0x101018, roughness: 0.6, metalness: 0.2 });
   const wheelMat = new THREE.MeshStandardMaterial({ color: 0x15151a, roughness: 0.9 });
   const rimMat = new THREE.MeshBasicMaterial({ color: 0x00f0ff });
+  rimMat.color.multiplyScalar(2.2);
 
   const body = new THREE.Mesh(new THREE.BoxGeometry(1.9, 0.55, 4.3), bodyMat);
   body.position.y = 0.62; body.castShadow = true; group.add(body);
@@ -950,6 +1068,7 @@ function buildCar() {
   }
   // headlight & taillight blocks
   const headMat = new THREE.MeshBasicMaterial({ color: 0xfff6c8 });
+  headMat.color.multiplyScalar(1.7);
   const tailMat = new THREE.MeshBasicMaterial({ color: 0x660b1e });
   for (const sx of [-0.62, 0.62]) {
     const hl = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.16, 0.08), headMat);
@@ -959,6 +1078,7 @@ function buildCar() {
   }
   // exhaust flames (visible during nitro)
   const flameMat = new THREE.MeshBasicMaterial({ color: 0x66ccff, transparent: true, opacity: 0.9 });
+  flameMat.color.multiplyScalar(2.4);
   const flames = [];
   for (const sx of [-0.45, 0.45]) {
     const f = new THREE.Mesh(new THREE.ConeGeometry(0.14, 0.9, 6), flameMat);
@@ -997,8 +1117,16 @@ function buildCar() {
   const under = new THREE.PointLight(0x00f0ff, 0, 9, 1.6);
   under.position.set(0, 0.25, 0);
   group.add(under);
+  // headlight glow sprites (fade in at night)
+  const hlGlowMat = new THREE.SpriteMaterial({ map: softGlowTex, color: 0xffe9b0, transparent: true, opacity: 0, depthWrite: false, blending: THREE.AdditiveBlending });
+  for (const sx of [-0.62, 0.62]) {
+    const g = new THREE.Sprite(hlGlowMat);
+    g.scale.set(1.1, 1.1, 1);
+    g.position.set(sx, 0.62, 2.95);
+    group.add(g);
+  }
   scene.add(group);
-  return { group, wheels, frontPivots, flames, headlights, under, tailMat, flameMat };
+  return { group, wheels, frontPivots, flames, headlights, under, tailMat, flameMat, hlGlowMat };
 }
 const car = buildCar();
 
@@ -1017,6 +1145,7 @@ class Particles {
     this.geo = geo;
     this.points = new THREE.Points(geo, new THREE.PointsMaterial({
       size, vertexColors: true, transparent: true, opacity, depthWrite: false, sizeAttenuation: true,
+      map: softGlowTex, alphaTest: 0.01,
     }));
     this.points.frustumCulled = false;
     scene.add(this.points);
@@ -1063,7 +1192,7 @@ const snowfall = (() => {
   }
   const geo = new THREE.BufferGeometry();
   geo.setAttribute('position', new THREE.BufferAttribute(posArr, 3));
-  const mat = new THREE.PointsMaterial({ color: 0xffffff, size: 0.4, transparent: true, opacity: 0, depthWrite: false });
+  const mat = new THREE.PointsMaterial({ color: 0xffffff, size: 0.5, transparent: true, opacity: 0, depthWrite: false, map: softGlowTex, alphaTest: 0.01 });
   const pts = new THREE.Points(geo, mat);
   pts.frustumCulled = false;
   scene.add(pts);
@@ -1137,12 +1266,13 @@ const orbGlowTex = (() => {
   ctx2.fillRect(0, 0, 64, 64);
   return new THREE.CanvasTexture(cv);
 })();
+const orbMat = new THREE.MeshBasicMaterial({ color: 0x50ffee });
+orbMat.color.multiplyScalar(1.9);
+const orbGlowMat = new THREE.SpriteMaterial({ map: orbGlowTex, transparent: true, depthWrite: false });
+orbGlowMat.color.multiplyScalar(1.4);
 for (let i = 0; i < 10; i++) {
-  const mesh = new THREE.Mesh(
-    new THREE.IcosahedronGeometry(1.1, 0),
-    new THREE.MeshBasicMaterial({ color: 0x50ffee })
-  );
-  const glow = new THREE.Sprite(new THREE.SpriteMaterial({ map: orbGlowTex, transparent: true, depthWrite: false }));
+  const mesh = new THREE.Mesh(new THREE.IcosahedronGeometry(1.1, 0), orbMat);
+  const glow = new THREE.Sprite(orbGlowMat);
   glow.scale.set(7, 7, 1);
   mesh.add(glow);
   scene.add(mesh);
@@ -1168,14 +1298,16 @@ function respawnOrb(orb, carWX, carWZ, heading) {
 const beacon = { wx: 0, wz: 0, active: false, time: 0, spin: 0 };
 const beamMesh = new THREE.Mesh(
   new THREE.CylinderGeometry(2.4, 2.4, 220, 10, 1, true),
-  new THREE.MeshBasicMaterial({ color: 0xffd166, transparent: true, opacity: 0.33, side: THREE.DoubleSide, depthWrite: false, fog: false })
+  new THREE.MeshBasicMaterial({ color: 0xffd166, transparent: true, opacity: 0.24, side: THREE.DoubleSide, depthWrite: false, fog: false, blending: THREE.AdditiveBlending })
 );
+beamMesh.material.color.multiplyScalar(1.15);
 beamMesh.visible = false;
 scene.add(beamMesh);
 const ringMesh = new THREE.Mesh(
   new THREE.TorusGeometry(7, 0.45, 8, 28),
-  new THREE.MeshBasicMaterial({ color: 0xffd166, transparent: true, opacity: 0.85, fog: false })
+  new THREE.MeshBasicMaterial({ color: 0xffd166, transparent: true, opacity: 0.85, fog: false, blending: THREE.AdditiveBlending })
 );
+ringMesh.material.color.multiplyScalar(1.9);
 ringMesh.rotation.x = Math.PI / 2;
 ringMesh.visible = false;
 scene.add(ringMesh);
@@ -1515,6 +1647,12 @@ const sunLow = new THREE.Color(0xff8b3d);
 const sunHigh = new THREE.Color(0xfff2d0);
 const hemiSkyDay = new THREE.Color(0xbfe6ff);
 const hemiSkyNight = new THREE.Color(0x1a2450);
+const skyTopNight = new THREE.Color(0x010209);
+const skyTopDusk = new THREE.Color(0x3a2258);
+const skyTopDay = new THREE.Color(0x2f74cf);
+const cloudNight = new THREE.Color(0x141a2e);
+const cloudDusk = new THREE.Color(0xffa088);
+const cloudDay = new THREE.Color(0xffffff);
 const _c1 = new THREE.Color(), _c2 = new THREE.Color();
 
 function updateDayNight(dt) {
@@ -1529,6 +1667,14 @@ function updateDayNight(dt) {
   else _c1.lerpColors(skyDusk, skyDay, smoothstep(0.06, 0.42, elev));
   scene.background.copy(_c1);
   scene.fog.color.copy(_c1);
+  skyU.uHorizon.value.copy(_c1);
+  if (elev < -0.16) skyU.uTop.value.copy(skyTopNight);
+  else if (elev < 0.06) skyU.uTop.value.lerpColors(skyTopNight, skyTopDusk, smoothstep(-0.16, 0.06, elev));
+  else skyU.uTop.value.lerpColors(skyTopDusk, skyTopDay, smoothstep(0.06, 0.42, elev));
+  if (elev < -0.16) cloudMat.color.copy(cloudNight);
+  else if (elev < 0.06) cloudMat.color.lerpColors(cloudNight, cloudDusk, smoothstep(-0.16, 0.06, elev));
+  else cloudMat.color.lerpColors(cloudDusk, cloudDay, smoothstep(0.06, 0.42, elev));
+  cloudMat.opacity = lerp(0.45, 0.8, clamp(elev * 3, 0, 1));
 
   // sun light (moonlight after dark)
   const dayI = clamp(elev * 3.2, 0, 2.2);
@@ -1537,10 +1683,16 @@ function updateDayNight(dt) {
     _c2.lerpColors(sunLow, sunHigh, smoothstep(0, 0.5, elev));
     sun.color.copy(_c2);
     sun.intensity = Math.max(dayI, 0.12);
+    skyU.uGlowDir.value.copy(sunDir);
+    skyU.uGlowCol.value.copy(_c2);
+    skyU.uGlow.value = 1.0;
   } else {
     sun.position.copy(sunDir).multiplyScalar(-320).add(car.group.position);
     sun.color.setHex(0x94a8ff);
     sun.intensity = 0.3;
+    skyU.uGlowDir.value.copy(sunDir).negate();
+    skyU.uGlowCol.value.setHex(0x9fb4ff);
+    skyU.uGlow.value = 0.35;
   }
   sun.target.position.copy(car.group.position);
 
@@ -1549,7 +1701,7 @@ function updateDayNight(dt) {
 
   // celestial bodies track the camera so they stay on the horizon
   sunDisc.position.copy(camera.position).addScaledVector(sunDir, 1900);
-  sunDisc.material.color.lerpColors(sunLow, new THREE.Color(0xffe9ae), smoothstep(0, 0.4, elev));
+  sunDisc.material.color.lerpColors(sunLow, new THREE.Color(0xffe9ae), smoothstep(0, 0.4, elev)).multiplyScalar(1.4);
   moonDisc.position.copy(camera.position).addScaledVector(sunDir, -1900);
   starMat.opacity = smoothstep(-0.02, -0.28, elev);
   stars.position.copy(camera.position);
@@ -1558,7 +1710,11 @@ function updateDayNight(dt) {
   const nightT = smoothstep(0.14, -0.1, elev);
   for (const sp of car.headlights) sp.intensity = nightT * 650;
   car.under.intensity = nightT * 22;
-  car.tailMat.color.setHex(keys['KeyS'] || keys['ArrowDown'] ? 0xff2038 : (nightT > 0.3 ? 0xcc1830 : 0x660b1e));
+  car.hlGlowMat.opacity = nightT * 0.55;
+  bloomPass.strength = 0.2 + nightT * 0.32;
+  const braking = keys['KeyS'] || keys['ArrowDown'];
+  car.tailMat.color.setHex(braking ? 0xff2038 : (nightT > 0.3 ? 0xcc1830 : 0x660b1e));
+  if (braking || nightT > 0.3) car.tailMat.color.multiplyScalar(2.2);
   hud.clock.textContent = elev > 0.06 ? '☀' : (elev > -0.16 ? '🌇' : '🌙');
 }
 
@@ -1958,8 +2114,11 @@ function frame(now) {
   updateChunks(state.pos.x + off.x, state.pos.z + off.z, 5);
   water.position.x = state.pos.x;
   water.position.z = state.pos.z;
+  waterU.uTime.value = now * 0.001;
   updateCamera(dt);
-  renderer.render(scene, camera);
+  sky.position.copy(camera.position);
+  updateClouds(dt);
+  composer.render();
 }
 requestAnimationFrame(frame);
 
@@ -1967,6 +2126,7 @@ addEventListener('resize', () => {
   camera.aspect = innerWidth / innerHeight;
   camera.updateProjectionMatrix();
   renderer.setSize(innerWidth, innerHeight);
+  composer.setSize(innerWidth, innerHeight);
 });
 
 /* ---------------- touch controls ---------------- */
